@@ -55,9 +55,9 @@ class EnvelopeApp:
     def build_scene(self, redraw_only: bool = False) -> None:
         self.canvas.delete("all")
 
+        self.compute_layout()
         self.draw_gradient_background()
         self.draw_center_glow()
-        self.compute_layout()
         self.draw_envelope_closed()
 
         if self.is_open:
