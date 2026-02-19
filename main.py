@@ -1,46 +1,90 @@
+import math
 import random
+import time
 import tkinter as tk
 from tkinter import font as tkfont
 
 
 class EnvelopeApp:
+    """Fullscreen monthsary envelope scene with smooth animations and transparent background support."""
+
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Monthsary Envelope")
 
-        # Fullscreen keeps the app visible in Alt+Tab while hiding normal window chrome.
+        # Keep this as a normal top-level window so it appears in Alt+Tab.
         self.root.attributes("-fullscreen", True)
-        self.root.minsize(900, 600)
 
-        self.canvas = tk.Canvas(self.root, highlightthickness=0, bd=0)
+        self.transparent_key = "#00ff00"
+        self.transparent_supported = False
+        self._enable_transparent_background()
+
+        self.canvas = tk.Canvas(
+            self.root,
+            bg=self.transparent_key if self.transparent_supported else "#100b19",
+            highlightthickness=0,
+            bd=0,
+        )
         self.canvas.pack(fill="both", expand=True)
 
+        self.width = self.root.winfo_screenwidth()
+        self.height = self.root.winfo_screenheight()
+
         self.is_open = False
+        self.open_start_time = 0.0
+        self.letter_start_time = 0.0
         self.hearts_started = False
-        self.hearts: list[dict] = []
+        self.heart_state: list[dict] = []
+
+        self.flap_open_ratio = 0.0
+        self.letter_ratio = 0.0
+
+        self.envelope_tag = "envelope"
+        self.hint_tag = "hint"
+        self.bg_tag = "bg"
+        self.heart_tag = "heart"
+
         self.envelope_items: dict[str, int] = {}
         self.letter_items: dict[str, int] = {}
 
         self.palette = {
-            "bg_top": "#171224",
-            "bg_bottom": "#2a1730",
-            "glow": "#ff7fb0",
-            "env_back": "#ffd9e8",
-            "env_fold": "#ffc3dc",
-            "env_shadow": "#ee9fbe",
-            "paper": "#fffaf3",
-            "paper_border": "#f3dcb1",
-            "ink": "#5a2d41",
-            "accent": "#ff5f98",
+            "bg_top": "#140e22",
+            "bg_bottom": "#28163a",
+            "glow_hot": "#ff7aac",
+            "glow_soft": "#ffbfd9",
+            "env_base": "#ffd4e7",
+            "env_mid": "#ffc0da",
+            "env_dark": "#ee8fb8",
+            "paper": "#fff9ef",
+            "paper_edge": "#f1ddbd",
+            "ink": "#563246",
+            "ink_soft": "#a05a7d",
+            "accent": "#ff4f93",
         }
 
-        self.root.bind("<Escape>", lambda _event: self.root.destroy())
-        self.root.bind("<Button-1>", self.handle_click)
-        self.root.bind("<Configure>", self.on_resize)
+        self.title_font_family = self.pick_first_font(["Segoe Script", "Lucida Handwriting", "Georgia", "Times New Roman"])
+        self.body_font_family = self.pick_first_font(["Georgia", "Palatino Linotype", "Cambria", "Segoe UI"])
 
-        self.width = self.root.winfo_screenwidth()
-        self.height = self.root.winfo_screenheight()
-        self.build_scene()
+        self.bind_events()
+        self.rebuild_scene()
+
+    def _enable_transparent_background(self) -> None:
+        self.root.configure(bg=self.transparent_key)
+        try:
+            self.root.wm_attributes("-transparentcolor", self.transparent_key)
+            self.transparent_supported = True
+        except tk.TclError:
+            self.transparent_supported = False
+
+    def bind_events(self) -> None:
+        self.root.bind("<Escape>", lambda _e: self.root.destroy())
+        self.root.bind("<F11>", self.toggle_fullscreen)
+        self.root.bind("<Configure>", self.on_resize)
+        self.canvas.bind("<Button-1>", self.handle_click)
+
+    def toggle_fullscreen(self, _event=None) -> None:
+        current = bool(self.root.attributes("-fullscreen"))
+        self.root.attributes("-fullscreen", not current)
 
     def on_resize(self, _event=None) -> None:
         new_w = self.root.winfo_width()
@@ -49,79 +93,97 @@ class EnvelopeApp:
             return
         if (new_w, new_h) == (self.width, self.height):
             return
+
         self.width, self.height = new_w, new_h
-        self.build_scene(redraw_only=True)
+        self.rebuild_scene()
 
-    def build_scene(self, redraw_only: bool = False) -> None:
+    def rebuild_scene(self) -> None:
         self.canvas.delete("all")
-
         self.compute_layout()
-        self.draw_gradient_background()
-        self.draw_center_glow()
-        self.draw_envelope_closed()
+        self.draw_background_layers()
+        self.draw_envelope()
 
         if self.is_open:
-            self.draw_envelope_open_static()
-            self.draw_letter(progress=1.0, show_text=True)
+            self.update_flap(1.0)
+            self.draw_letter(1.0, show_text=True)
 
-        if not redraw_only:
-            self.hearts.clear()
+        self.draw_corner_hint()
+
+        if self.hearts_started:
+            self.redraw_hearts()
 
     def compute_layout(self) -> None:
-        self.cx = self.width / 2
-        self.cy = self.height / 2 + self.height * 0.02
+        self.cx = self.width * 0.5
+        self.cy = self.height * 0.54
 
-        self.env_w = max(340, min(self.width * 0.34, 720))
-        self.env_h = self.env_w * 0.56
+        self.env_w = min(max(self.width * 0.34, 360), 760)
+        self.env_h = self.env_w * 0.58
 
-        self.left = self.cx - self.env_w / 2
-        self.right = self.cx + self.env_w / 2
-        self.top = self.cy - self.env_h / 2
-        self.bottom = self.cy + self.env_h / 2
+        self.left = self.cx - self.env_w * 0.5
+        self.right = self.cx + self.env_w * 0.5
+        self.top = self.cy - self.env_h * 0.5
+        self.bottom = self.cy + self.env_h * 0.5
 
-        self.letter_w = self.env_w * 0.86
-        self.letter_h = self.env_h * 1.16
+        self.letter_w = self.env_w * 0.87
+        self.letter_h = self.env_h * 1.17
 
-    def draw_gradient_background(self) -> None:
-        steps = 80
-        r1, g1, b1 = self.hex_to_rgb(self.palette["bg_top"])
-        r2, g2, b2 = self.hex_to_rgb(self.palette["bg_bottom"])
+    def draw_background_layers(self) -> None:
+        if self.transparent_supported:
+            return
+
+        self.draw_vertical_gradient(self.palette["bg_top"], self.palette["bg_bottom"], steps=70)
+
+        glow_r = min(self.width, self.height)
+        for i in range(10):
+            r = glow_r * (0.10 + i * 0.043)
+            color = self.mix_hex(self.palette["glow_hot"], self.palette["bg_top"], 0.20 - i * 0.015)
+            self.canvas.create_oval(
+                self.cx - r,
+                self.cy - r * 0.85,
+                self.cx + r,
+                self.cy + r * 0.85,
+                fill=color,
+                outline="",
+                tags=self.bg_tag,
+            )
+
+    def draw_vertical_gradient(self, top_hex: str, bottom_hex: str, steps: int = 60) -> None:
+        r1, g1, b1 = self.hex_to_rgb(top_hex)
+        r2, g2, b2 = self.hex_to_rgb(bottom_hex)
 
         for i in range(steps):
-            t = i / (steps - 1)
+            t = i / max(steps - 1, 1)
             r = int(r1 + (r2 - r1) * t)
             g = int(g1 + (g2 - g1) * t)
             b = int(b1 + (b2 - b1) * t)
-            y0 = int((self.height / steps) * i)
-            y1 = int((self.height / steps) * (i + 1))
-            self.canvas.create_rectangle(0, y0, self.width, y1, fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
+            y0 = self.height * i / steps
+            y1 = self.height * (i + 1) / steps
+            self.canvas.create_rectangle(0, y0, self.width, y1, fill=f"#{r:02x}{g:02x}{b:02x}", outline="", tags=self.bg_tag)
 
-    def draw_center_glow(self) -> None:
-        for i in range(7):
-            radius = min(self.width, self.height) * (0.10 + i * 0.05)
-            alpha_blend = max(0, 38 - i * 5)
-            color = self.fade_to_bg(self.palette["glow"], alpha_blend / 100)
-            self.canvas.create_oval(
-                self.cx - radius,
-                self.cy - radius * 0.84,
-                self.cx + radius,
-                self.cy + radius * 0.84,
-                fill=color,
-                outline="",
-            )
+    def draw_envelope(self) -> None:
+        self.envelope_items.clear()
+        shadow = max(8, self.env_w * 0.015)
 
-    def draw_envelope_closed(self) -> None:
-        shadow_offset = max(6, int(self.env_w * 0.014))
+        self.canvas.create_oval(
+            self.left - self.env_w * 0.08,
+            self.bottom - self.env_h * 0.10,
+            self.right + self.env_w * 0.08,
+            self.bottom + self.env_h * 0.20,
+            fill="#120b19",
+            outline="",
+            stipple="gray25",
+        )
+
         self.canvas.create_polygon(
-            self.left + shadow_offset,
-            self.top + shadow_offset,
-            self.right + shadow_offset,
-            self.top + shadow_offset,
-            self.right + shadow_offset,
-            self.bottom + shadow_offset,
-            self.left + shadow_offset,
-            self.bottom + shadow_offset,
-            fill="#140c1d",
+            self.left + shadow,
+            self.top + shadow,
+            self.right + shadow,
+            self.top + shadow,
+            self.right + shadow,
+            self.bottom + shadow,
+            self.left + shadow,
+            self.bottom + shadow,
+            fill="#120a1b",
             outline="",
         )
 
@@ -130,103 +192,94 @@ class EnvelopeApp:
             self.top,
             self.right,
             self.bottom,
-            fill=self.palette["env_back"],
-            outline=self.palette["env_shadow"],
+            fill=self.palette["env_base"],
+            outline=self.palette["env_dark"],
             width=3,
-            tags="envelope",
+            tags=self.envelope_tag,
         )
 
         self.envelope_items["left_fold"] = self.canvas.create_polygon(
             self.left,
             self.top,
             self.cx,
-            self.cy + self.env_h * 0.10,
+            self.cy + self.env_h * 0.12,
             self.left,
             self.bottom,
-            fill=self.palette["env_fold"],
-            outline=self.palette["env_shadow"],
+            fill=self.palette["env_mid"],
+            outline=self.palette["env_dark"],
             width=2,
-            tags="envelope",
+            tags=self.envelope_tag,
         )
 
         self.envelope_items["right_fold"] = self.canvas.create_polygon(
             self.right,
             self.top,
             self.cx,
-            self.cy + self.env_h * 0.10,
+            self.cy + self.env_h * 0.12,
             self.right,
             self.bottom,
-            fill=self.palette["env_fold"],
-            outline=self.palette["env_shadow"],
+            fill=self.palette["env_mid"],
+            outline=self.palette["env_dark"],
             width=2,
-            tags="envelope",
+            tags=self.envelope_tag,
         )
 
         self.envelope_items["bottom_fold"] = self.canvas.create_polygon(
             self.left,
             self.bottom,
             self.cx,
-            self.cy + self.env_h * 0.12,
+            self.cy + self.env_h * 0.14,
             self.right,
             self.bottom,
-            fill="#ffb4d3",
-            outline=self.palette["env_shadow"],
+            fill="#ffafd0",
+            outline=self.palette["env_dark"],
             width=2,
-            tags="envelope",
+            tags=self.envelope_tag,
         )
 
         self.envelope_items["flap"] = self.canvas.create_polygon(
             self.left,
             self.top,
             self.cx,
-            self.top - self.env_h * 0.42,
+            self.top - self.env_h * 0.46,
             self.right,
             self.top,
-            fill="#ffb0d0",
-            outline=self.palette["env_shadow"],
+            fill="#ffadd0",
+            outline=self.palette["env_dark"],
             width=2,
-            tags="envelope",
+            tags=self.envelope_tag,
         )
 
-        seal_font_size = max(30, int(self.env_w * 0.10))
+        seal_size = int(max(30, self.env_w * 0.10))
         self.envelope_items["seal"] = self.canvas.create_text(
             self.cx,
-            self.cy + self.env_h * 0.02,
+            self.cy + self.env_h * 0.01,
             text="❤",
             fill=self.palette["accent"],
-            font=("Segoe UI Emoji", seal_font_size, "bold"),
-            tags="envelope",
+            font=("Segoe UI Emoji", seal_size, "bold"),
+            tags=self.envelope_tag,
         )
 
-        hint_size = max(16, int(min(self.width, self.height) * 0.022))
-        self.canvas.create_text(
-            self.cx,
-            self.bottom + max(36, self.env_h * 0.18),
-            text="Click the envelope to open your monthsary letter",
-            fill="#ffd9ea",
-            font=("Segoe UI", hint_size, "bold"),
-            tags="hint",
-        )
+        if not self.is_open:
+            hint_size = int(max(16, min(self.width, self.height) * 0.022))
+            self.canvas.create_text(
+                self.cx,
+                self.bottom + max(44, self.env_h * 0.20),
+                text="Click envelope to open your letter",
+                fill="#ffe0ef",
+                font=("Segoe UI", hint_size, "bold"),
+                tags=self.hint_tag,
+            )
 
+    def draw_corner_hint(self) -> None:
+        text_color = "#efd4e5" if not self.transparent_supported else "#ffd3e8"
         self.canvas.create_text(
             self.width - 24,
-            26,
-            text="Press Esc to close",
+            24,
             anchor="ne",
-            fill="#ffe6f1",
-            font=("Segoe UI", max(10, int(hint_size * 0.55)), "bold"),
-        )
-
-    def draw_envelope_open_static(self) -> None:
-        inset = self.env_w * 0.24
-        self.canvas.coords(
-            self.envelope_items["flap"],
-            self.left + inset,
-            self.top,
-            self.cx,
-            self.top - self.env_h * 1.02,
-            self.right - inset,
-            self.top,
+            text="Esc: close    F11: toggle fullscreen",
+            fill=text_color,
+            font=("Segoe UI", 11, "bold"),
         )
 
     def handle_click(self, event: tk.Event) -> None:
@@ -235,16 +288,33 @@ class EnvelopeApp:
 
         if self.left <= event.x <= self.right and self.top <= event.y <= self.bottom:
             self.is_open = True
-            self.canvas.delete("hint")
-            self.animate_flap(0)
-            self.root.after(280, lambda: self.animate_letter_rise(0))
-            self.root.after(320, self.start_hearts)
+            self.canvas.delete(self.hint_tag)
+            self.open_start_time = time.perf_counter()
+            self.animate_opening()
+            self.root.after(220, self.start_hearts)
 
-    def animate_flap(self, step: int) -> None:
-        max_steps = 20
-        progress = min(step / max_steps, 1.0)
+    def animate_opening(self) -> None:
+        elapsed = time.perf_counter() - self.open_start_time
+        flap_duration = 0.70
+        letter_duration = 0.85
+
+        flap_t = self.ease_in_out_cubic(min(elapsed / flap_duration, 1.0))
+        self.flap_open_ratio = flap_t
+        self.update_flap(flap_t)
+
+        if elapsed > 0.18:
+            letter_elapsed = elapsed - 0.18
+            letter_t = self.ease_out_back(min(letter_elapsed / letter_duration, 1.0))
+            self.letter_ratio = max(0.0, min(letter_t, 1.0))
+            self.draw_letter(self.letter_ratio, show_text=self.letter_ratio >= 0.99)
+
+        if flap_t < 1.0 or self.letter_ratio < 1.0:
+            self.root.after(16, self.animate_opening)
+
+    def update_flap(self, progress: float) -> None:
         inset = self.env_w * 0.24 * progress
-        tip_y = self.top - self.env_h * (0.42 + 0.60 * progress)
+        tip_high = self.env_h * (0.46 + 0.72 * progress)
+        tip_y = self.top - tip_high
 
         self.canvas.coords(
             self.envelope_items["flap"],
@@ -256,162 +326,199 @@ class EnvelopeApp:
             self.top,
         )
 
-        if step < max_steps:
-            self.root.after(18, lambda: self.animate_flap(step + 1))
+        flap_color = self.mix_hex("#ffadd0", "#f58ab5", progress * 0.55)
+        self.canvas.itemconfigure(self.envelope_items["flap"], fill=flap_color)
+
+        if "seal" in self.envelope_items:
+            seal_fade = max(0.0, 1.0 - progress * 1.35)
+            seal_color = self.mix_hex(self.palette["accent"], self.palette["env_base"], 1.0 - seal_fade)
+            self.canvas.itemconfigure(self.envelope_items["seal"], fill=seal_color)
 
     def draw_letter(self, progress: float, show_text: bool = False) -> None:
-        rise = self.letter_h * progress
-        letter_left = self.cx - self.letter_w / 2
-        letter_right = self.cx + self.letter_w / 2
-        letter_bottom = self.bottom - self.env_h * 0.08
-        letter_top = letter_bottom - rise
+        left = self.cx - self.letter_w * 0.5
+        right = self.cx + self.letter_w * 0.5
+        bottom = self.bottom - self.env_h * 0.08
+        top = bottom - self.letter_h * progress
+
+        paper_edge = max(3, int(self.env_w * 0.0046))
 
         if "shadow" not in self.letter_items:
             self.letter_items["shadow"] = self.canvas.create_rectangle(
-                letter_left + 5,
-                letter_top + 5,
-                letter_right + 5,
-                letter_bottom + 5,
-                fill="#1a0f25",
+                left + 6,
+                top + 6,
+                right + 6,
+                bottom + 6,
+                fill="#0f0815",
                 outline="",
                 stipple="gray25",
             )
             self.letter_items["paper"] = self.canvas.create_rectangle(
-                letter_left,
-                letter_top,
-                letter_right,
-                letter_bottom,
+                left,
+                top,
+                right,
+                bottom,
                 fill=self.palette["paper"],
-                outline=self.palette["paper_border"],
-                width=3,
+                outline=self.palette["paper_edge"],
+                width=paper_edge,
             )
+            self.letter_items["line_1"] = self.canvas.create_line(left + 24, top + 56, right - 24, top + 56, fill="#f7ecd7", width=2)
+            self.letter_items["line_2"] = self.canvas.create_line(left + 24, top + 96, right - 24, top + 96, fill="#f7ecd7", width=2)
         else:
-            self.canvas.coords(self.letter_items["shadow"], letter_left + 5, letter_top + 5, letter_right + 5, letter_bottom + 5)
-            self.canvas.coords(self.letter_items["paper"], letter_left, letter_top, letter_right, letter_bottom)
+            self.canvas.coords(self.letter_items["shadow"], left + 6, top + 6, right + 6, bottom + 6)
+            self.canvas.coords(self.letter_items["paper"], left, top, right, bottom)
+            self.canvas.coords(self.letter_items["line_1"], left + 24, top + 56, right - 24, top + 56)
+            self.canvas.coords(self.letter_items["line_2"], left + 24, top + 96, right - 24, top + 96)
 
         if show_text:
-            self.draw_letter_text(letter_left, letter_top, letter_right, letter_bottom)
+            self.draw_letter_text(left, top, right, bottom)
 
-    def draw_letter_text(self, letter_left: float, letter_top: float, letter_right: float, letter_bottom: float) -> None:
-        content_w = letter_right - letter_left
-        content_h = letter_bottom - letter_top
+    def draw_letter_text(self, left: float, top: float, right: float, bottom: float) -> None:
+        w = right - left
+        h = bottom - top
 
-        title_size = max(19, int(content_w * 0.050))
-        body_size = max(14, int(content_w * 0.032))
+        heading_size = int(max(20, w * 0.050))
+        body_size = int(max(13, min(25, w * 0.033)))
 
-        title_font = self.pick_font(["Georgia", "Garamond", "Times New Roman", "Segoe UI"], title_size, "bold")
-        body_font = self.pick_font(["Georgia", "Palatino Linotype", "Segoe UI"], body_size, "normal")
+        heading_font = (self.title_font_family, heading_size, "bold")
+        body_font = (self.body_font_family, body_size, "normal")
 
-        msg = (
-            "Happy Monthsary, my love ✨\n\n"
-            "Every month with you feels like home.\n"
-            "Thank you for the laughs, the comfort,\n"
-            "and the little moments that become\n"
-            "my favorite memories.\n\n"
-            "I’m always grateful for you.\n"
-            "I love you so much. ❤"
+        heading = "Happy Monthsary"
+        body = (
+            "My love,\n\n"
+            "Another month with you is another month\n"
+            "of comfort, laughter, and sweet little moments\n"
+            "I never want to lose.\n\n"
+            "Thank you for being my calm, my home,\n"
+            "and my favorite part of every day.\n\n"
+            "I love you always. ❤"
         )
 
-        pad = content_w * 0.10
-        text_y = letter_top + content_h * 0.52
+        content_width = w * 0.78
 
-        if "title" not in self.letter_items:
-            self.letter_items["title"] = self.canvas.create_text(
+        if "heading" not in self.letter_items:
+            self.letter_items["heading"] = self.canvas.create_text(
                 self.cx,
-                letter_top + content_h * 0.15,
-                text="To My Favorite Person",
-                fill="#b45b7b",
-                font=title_font,
+                top + h * 0.12,
+                text=heading,
+                fill=self.palette["ink_soft"],
+                font=heading_font,
             )
             self.letter_items["body"] = self.canvas.create_text(
                 self.cx,
-                text_y,
-                text=msg,
+                top + h * 0.56,
+                text=body,
                 fill=self.palette["ink"],
-                width=content_w - (2 * pad),
+                width=content_width,
                 justify="center",
                 font=body_font,
-                spacing1=5,
+                spacing1=3,
                 spacing2=4,
                 spacing3=6,
             )
         else:
-            self.canvas.coords(self.letter_items["title"], self.cx, letter_top + content_h * 0.15)
-            self.canvas.coords(self.letter_items["body"], self.cx, text_y)
-            self.canvas.itemconfigure(self.letter_items["title"], font=title_font)
-            self.canvas.itemconfigure(self.letter_items["body"], font=body_font, width=content_w - (2 * pad))
-
-    def animate_letter_rise(self, step: int) -> None:
-        max_steps = 26
-        progress = min(step / max_steps, 1.0)
-        self.draw_letter(progress=progress, show_text=progress >= 1.0)
-
-        if step < max_steps:
-            self.root.after(18, lambda: self.animate_letter_rise(step + 1))
+            self.canvas.coords(self.letter_items["heading"], self.cx, top + h * 0.12)
+            self.canvas.coords(self.letter_items["body"], self.cx, top + h * 0.56)
+            self.canvas.itemconfigure(self.letter_items["heading"], font=heading_font)
+            self.canvas.itemconfigure(self.letter_items["body"], font=body_font, width=content_width)
 
     def start_hearts(self) -> None:
         if self.hearts_started:
             return
         self.hearts_started = True
-        self.spawn_heart()
+        self.spawn_heart_loop()
         self.animate_hearts()
 
-    def spawn_heart(self) -> None:
+    def spawn_heart_loop(self) -> None:
         if not self.hearts_started:
             return
 
-        x = random.uniform(16, self.width - 16)
-        y = -20
-        size = random.randint(max(12, int(self.width * 0.007)), max(18, int(self.width * 0.013)))
-        color = random.choice(["#ff90be", "#ff74ad", "#ffd2e6", "#ff5f98"])
-        speed = random.uniform(1.1, 2.2)
-        drift = random.uniform(-0.7, 0.7)
+        x = random.uniform(12, self.width - 12)
+        y = -30
+        size = random.randint(max(11, int(self.width * 0.0068)), max(19, int(self.width * 0.012)))
+        speed = random.uniform(0.9, 1.9)
+        phase = random.uniform(0, math.pi * 2)
+        amplitude = random.uniform(8.0, 20.0)
+        drift = random.uniform(-0.24, 0.24)
+        color = random.choice(["#ff85b8", "#ff6ea8", "#ffd3e9", "#ff4f93"])
 
-        heart_id = self.canvas.create_text(x, y, text="❤", fill=color, font=("Segoe UI Emoji", size))
-        self.hearts.append({"id": heart_id, "x": x, "y": y, "speed": speed, "drift": drift, "sway": random.uniform(0, 6.2)})
+        heart_id = self.canvas.create_text(x, y, text="❤", fill=color, font=("Segoe UI Emoji", size), tags=self.heart_tag)
+        self.heart_state.append(
+            {
+                "id": heart_id,
+                "x": x,
+                "y": y,
+                "speed": speed,
+                "phase": phase,
+                "amp": amplitude,
+                "drift": drift,
+                "step": random.uniform(0.05, 0.11),
+            }
+        )
 
-        self.root.after(random.randint(240, 520), self.spawn_heart)
+        self.root.after(random.randint(220, 500), self.spawn_heart_loop)
 
     def animate_hearts(self) -> None:
         if not self.hearts_started:
             return
 
         alive = []
-        for heart in self.hearts:
+        for heart in self.heart_state:
             heart["y"] += heart["speed"]
-            heart["sway"] += 0.05
-            heart["x"] += heart["drift"] + 0.35 * (random.uniform(-1, 1))
-            sway_offset = 2.6 * random.uniform(-0.7, 0.7)
-            self.canvas.coords(heart["id"], heart["x"] + sway_offset, heart["y"])
+            heart["phase"] += heart["step"]
+            heart["x"] += heart["drift"]
+            draw_x = heart["x"] + math.sin(heart["phase"]) * heart["amp"] * 0.06
+            self.canvas.coords(heart["id"], draw_x, heart["y"])
 
-            if heart["y"] < self.height + 36:
+            if heart["y"] <= self.height + 40:
                 alive.append(heart)
             else:
                 self.canvas.delete(heart["id"])
 
-        self.hearts = alive
-        self.root.after(30, self.animate_hearts)
+        self.heart_state = alive
+        self.root.after(16, self.animate_hearts)
+
+    def redraw_hearts(self) -> None:
+        # On resize rebuild, existing hearts are removed with canvas; keep motion by clearing stale ids.
+        self.heart_state.clear()
+
+    @staticmethod
+    def ease_in_out_cubic(t: float) -> float:
+        if t < 0.5:
+            return 4 * t * t * t
+        return 1 - pow(-2 * t + 2, 3) / 2
+
+    @staticmethod
+    def ease_out_back(t: float) -> float:
+        c1 = 1.70158
+        c3 = c1 + 1
+        return 1 + c3 * pow(t - 1, 3) + c1 * pow(t - 1, 2)
 
     @staticmethod
     def hex_to_rgb(value: str) -> tuple[int, int, int]:
-        value = value.lstrip("#")
-        return tuple(int(value[i : i + 2], 16) for i in (0, 2, 4))
+        value = value.strip().lstrip("#")
+        return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
 
-    def fade_to_bg(self, color: str, strength: float) -> str:
-        r, g, b = self.hex_to_rgb(color)
-        rb, gb, bb = self.hex_to_rgb(self.palette["bg_top"])
-        fr = int((r * strength) + (rb * (1 - strength)))
-        fg = int((g * strength) + (gb * (1 - strength)))
-        fb = int((b * strength) + (bb * (1 - strength)))
-        return f"#{fr:02x}{fg:02x}{fb:02x}"
+    def mix_hex(self, fg: str, bg: str, ratio: float) -> str:
+        ratio = max(0.0, min(1.0, ratio))
+        fr, fg_c, fb = self.hex_to_rgb(fg)
+        br, bg_c, bb = self.hex_to_rgb(bg)
+
+        r = int(fr * ratio + br * (1 - ratio))
+        g = int(fg_c * ratio + bg_c * (1 - ratio))
+        b = int(fb * ratio + bb * (1 - ratio))
+        return f"#{r:02x}{g:02x}{b:02x}"
 
     @staticmethod
-    def pick_font(candidates: list[str], size: int, weight: str) -> tuple[str, int, str]:
-        available = set(tkfont.families())
-        for name in candidates:
-            if name in available:
-                return (name, size, weight)
-        return ("TkDefaultFont", size, weight)
+    def pick_first_font(candidates: list[str]) -> str:
+        try:
+            available = set(tkfont.families())
+        except tk.TclError:
+            return "TkDefaultFont"
+
+        for item in candidates:
+            if item in available:
+                return item
+        return "TkDefaultFont"
 
     def run(self) -> None:
         self.root.mainloop()
